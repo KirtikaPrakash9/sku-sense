@@ -1,0 +1,17 @@
+# local clone of the CVPR author kit (cvpr.sty and the .bst are copied into paper/)
+kit/
+# packaged submission (rebuilt from paper/)
+submission/
+*.zip
+# LaTeX build files
+*.aux
+*.bbl
+*.blg
+*.brf
+*.log
+*.out
+*.synctex.gz
+missfont.log
+# Python
+__pycache__/
+.DS_Store

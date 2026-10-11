@@ -1,0 +1,34 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Proposed Method}
+\label{sec:method}
+
+\paragraph{Overview.}
+\Cref{fig:arch} shows the pipeline. A frozen OVD with a generic prompt proposes product boxes, with no attempt yet to name the SKU. Each crop is embedded by a frozen DINOv2 encoder. Every catalogue SKU is represented by one to five reference images passed through the same encoder, and by its name passed through a frozen CLIP text encoder. A small trained adapter moves crop and reference features into a space where near-identical SKUs sit apart, and a fusion re-ranker turns visual, text and detector evidence into one score per SKU. Only the adapter and the fusion weights are trained, about 0.7\,M parameters, so adding a new SKU means adding a reference photo, with no retraining.
+
+\paragraph{(a) Class-agnostic proposals.}
+Input: a shelf image $I$. We prompt the frozen Grounding DINO \cite{liu2024groundingdino} with ``product . box . pouch . bottle .'' and keep boxes $b_i$, $i=1,\dots,N$, with confidence $s^{\mathrm{det}}_i>0.25$ after non-maximum suppression at IoU 0.5. YOLO-World \cite{cheng2024yoloworld} is swapped in as a second proposer to see how much the detector choice matters. Output: boxes and scores; nothing here is trained. We report proposal recall on its own so that a missed box is never counted as a wrong SKU.
+
+\paragraph{(b) Frozen embeddings.}
+Each box is cropped with a 10\% margin, resized to $224\times224$ and passed through DINOv2 ViT-B/14 \cite{oquab2024dinov2}; the class token is the crop feature $f_i\in\mathbb{R}^{768}$. Reference images of SKU $k$ go through the same encoder and are averaged into $e_k$. We use DINOv2 rather than CLIP for this branch because self-supervised features keep fine print and texture that caption supervision tends to wash out, and \cref{sec:plan} tests that choice. The SKU name (``brand, line, variant, size'') goes through the CLIP ViT-B/16 text encoder \cite{radford2021clip} to give $t_k$, and the crop through the CLIP image encoder to give $c_i$, so that $\cos(c_i,t_k)$ is a zero-shot text match. All encoders are frozen.
+
+\paragraph{(c1) SKU adapter (trained).}
+The adapter is a two-layer residual MLP, $g_\theta(x)=W_2\,\mathrm{GELU}(W_1x)+Px$, with $W_1\in\mathbb{R}^{512\times768}$, $W_2\in\mathbb{R}^{256\times512}$ and a linear shortcut $P\in\mathbb{R}^{256\times768}$, followed by $\ell_2$ normalisation. It maps crops to $z_i=g_\theta(f_i)$ and references to $\hat z_k=g_\theta(e_k)$. Because one adapter serves both branches, a SKU that was never in training can still be matched at test time: its reference photo goes through the same mapping as the crops.
+
+\paragraph{(c2) Fusion re-ranker (trained).}
+For crop $i$ and SKU $k$,
+\begin{equation}
+  s_{ik} = w_v \cos(z_i,\hat z_k) + w_t \cos(c_i,t_k) + w_d\, s^{\mathrm{det}}_i ,
+  \label{eq:score}
+\end{equation}
+with three learned scalars. The prediction is $\arg\max_k s_{ik}$, and a crop becomes \emph{unknown} when $\max_k s_{ik}<\delta$, with $\delta$ set on validation data for 95\% precision on known SKUs. Real shelves always hold products that are missing from the catalogue, so the reject option is not optional.
+
+\paragraph{(c3) Objective.}
+Adapter and fusion weights are trained jointly with a contrastive loss over the gallery $\mathcal{K}$ of base SKUs, in which SKUs sharing the brand of the true SKU $y_i$ count more in the denominator:
+\begin{equation}
+  \mathcal{L} = -\frac{1}{N}\sum_{i=1}^{N}\log\frac{\exp(s_{iy_i}/\tau)}{\sum_{k\in\mathcal{K}}\omega_{ik}\exp(s_{ik}/\tau)} ,
+  \label{eq:loss}
+\end{equation}
+where $\omega_{ik}=\gamma$ when $k\neq y_i$ has the brand of $y_i$ and $\omega_{ik}=1$ otherwise, and $\tau$ is a learned temperature. Setting $\gamma=1$ gives the plain InfoNCE loss \cite{oord2018cpc}. With $\gamma>1$ the gradient concentrates on exactly the near-duplicates that generic features confuse, in the spirit of supervised contrastive learning \cite{khosla2020supcon}. Training crops come from ground-truth boxes in the training split, with random resized crops, colour jitter and perspective warps to imitate the shift from studio photo to shelf.
+
+\paragraph{(d) Output.}
+Each facing receives its top-scoring SKU, its top five candidates, or the unknown label.

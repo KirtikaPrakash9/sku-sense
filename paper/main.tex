@@ -1,0 +1,144 @@
+% BITS F459 Computer Vision, Mini Project Term I manuscript.
+% Built on the official CVPR author kit (github.com/cvpr-org/author-kit).
+\documentclass[10pt,twocolumn,letterpaper]{article}
+\usepackage[pagenumbers]{cvpr}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{amsmath,amssymb}
+\usepackage{xcolor}
+\definecolor{cvprblue}{rgb}{0.21,0.49,0.74}
+\usepackage[pagebackref,breaklinks,colorlinks,allcolors=cvprblue]{hyperref}
+
+\def\paperID{Team NN}
+\def\confName{CVPR}
+\def\confYear{2027}
+
+\title{Same Brand, Different SKU: Can Open-Vocabulary Detectors\\Recognise Near-Identical Products on Retail Shelves?}
+
+\author{Kirtika \quad Wundavalli Venkata Aneesh \quad Vaishnavi \quad Devadutt Balakrishnan \quad Rohit Vinod Nair\\
+Team NN, BITS F459 Computer Vision, BITS Pilani, Dubai Campus\\
+{\tt\small \{f20230219, f20230260, f20230319, f20230190, f20230099\}@dubai.bits-pilani.ac.in}
+}
+
+\begin{document}
+\maketitle
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\begin{abstract}
+A shelf audit has to name every product on the shelf at the level of the stock-keeping unit (SKU), and two SKUs of one brand often differ only in flavour or pack size. Open-vocabulary detectors (Grounding DINO, YOLO-World, OWLv2 and others) find objects from a text prompt with no retraining, which makes them attractive for catalogues that change every week. Their benchmarks, however, use generic categories, and the retail papers that use foundation models work on pre-cropped products. Nobody has yet measured how much accuracy these detectors lose between the product category and the exact SKU on a real shelf, or which cheap fix recovers most of it. We plan that measurement on Grocery Products shelf images annotated per instance, with one reference image per SKU. On identical box proposals we compare SKU-name prompts, visual-exemplar prompts, and a re-ranker that trains a 0.7\,M-parameter adapter on frozen DINOv2 features with a brand-aware contrastive loss. We report category- and SKU-level mAP$_{50}$, top-1 accuracy, same-brand confusion, accuracy on unseen SKUs and latency.
+\end{abstract}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Introduction}
+\label{sec:intro}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{fig_teaser.pdf}
+  \caption{The problem in one picture. A brand-level text prompt fires on every box in a row (dashed blue), but each box is a different SKU, and the last box in the second row is a store-brand copy. Crops from ``Tesco Supermarket (Cereal)'' photographs by Vauxford, Wikimedia Commons, CC BY-SA 4.0.}
+  \label{fig:teaser}
+\end{figure}
+
+Retailers photograph their shelves to check what is in stock and whether each product sits where the planogram puts it. For that check to be useful, every facing has to be matched to its stock-keeping unit (SKU). \Cref{fig:teaser} shows why this is hard. Kellogg's sells Crunchy Nut in several flavours and pack sizes, and the boxes share the logo, the colours and the layout; only a line of print or a corner banner tells them apart. A store carries thousands of such SKUs and the list changes weekly, so a detector trained on a fixed SKU list goes stale quickly.
+
+Open-vocabulary detectors (OVDs) seem to solve the staleness problem. Grounding DINO \cite{liu2024groundingdino}, YOLO-World \cite{cheng2024yoloworld} and LLMDet \cite{fu2025llmdet} find any object that a text prompt names, and OWLv2 \cite{minderer2023owlv2}, MQ-Det \cite{xu2023mqdet} and YOLOE \cite{wang2025yoloe} also take an example image as the query. Their reported numbers, though, come from COCO, LVIS and other benchmarks of generic categories, and when Bianchi \etal tested them on classes separated by a single attribute, accuracy fell sharply \cite{bianchi2024devil}. Retail papers that use foundation models start from a cropped product and classify or retrieve it \cite{tur2024mimex,maminta2026groceryretrieval}, and the systems that do work on whole shelves are trained detect-then-match pipelines \cite{tonioni2018pipeline,osokin2020os2d,budimir2025contextaware}. To our knowledge, \textbf{no prior work has measured, on real shelf images with per-instance SKU labels and one reference image per SKU, how much accuracy zero-shot open-vocabulary detectors lose between the product category and the SKU among same-brand variants, or compared text-prompt, visual-exemplar and embedding re-ranking fixes for that loss under a single protocol.}
+
+We propose such a study, with three contributions:
+\begin{enumerate}
+  \item A measurement, for Grounding DINO, YOLO-World and OWLv2 used zero-shot on Grocery Products shelf images with per-instance SKU boxes \cite{george2014grocery,osokin2020os2d}, of the gap between category-level and SKU-level mAP$_{50}$, together with the share of SKU errors that confuse two SKUs of the same brand.
+  \item A comparison of SKU-name prompts, visual-exemplar prompts and embedding re-ranking with the proposals, reference images and test split held fixed, reporting SKU-level mAP$_{50}$, top-1 accuracy and latency for each.
+  \item A 0.7\,M-parameter SKU adapter and fusion re-ranker trained with a brand-aware contrastive loss, with its gain over frozen DINOv2 nearest-neighbour matching reported separately for SKUs seen in training and unseen SKUs, and as a function of the hard-negative weight $\gamma$.
+\end{enumerate}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Related Work}
+\label{sec:related}
+
+\paragraph{Open-vocabulary and prompted detection.}
+GLIP \cite{li2022glip} recast detection as phrase grounding, and Grounding DINO \cite{liu2024groundingdino} fused a text encoder into a DETR-style detector; it is now the default open-set baseline. YOLO-World \cite{cheng2024yoloworld} brought the same idea to a real-time detector, and LLMDet \cite{fu2025llmdet} improved it with captions written by a large language model. OWL-ViT and OWLv2 \cite{minderer2022owlvit,minderer2023owlv2} put box heads on a CLIP \cite{radford2021clip} backbone and accept a text or an image query. MQ-Det \cite{xu2023mqdet}, T-Rex2 \cite{jiang2024trex2} and YOLOE \cite{wang2025yoloe} mix text with visual exemplars, while DE-ViT \cite{zhang2024devit} and the method of Han and Lim \cite{han2024fmfsod} detect new classes from a few examples using DINOv2 \cite{oquab2024dinov2} features. All of them report results on generic categories (COCO, LVIS, ODinW), and even RF100-VL \cite{popov2025rf100vl}, which spans 100 domains, does not ask a detector to tell apart two flavours of one product.
+
+\paragraph{Fine-grained open-vocabulary detection.}
+Bianchi \etal \cite{bianchi2024devil} built negatives that differ from the true caption in one attribute and found that OVDs often fail to prefer the correct caption. HA-FGOVD \cite{ma2025hafgovd} and GUIDED \cite{li2025guided} propose fixes for attribute-level detection, and SHiNe \cite{liu2024shine} uses a class hierarchy to work across granularities. These papers vary colour, material or pattern on everyday objects. Product identity, where the cue is printed text and artwork, is not tested.
+
+\paragraph{Instance detection from reference images.}
+The closest task in the general literature is instance detection: find every occurrence of one specific object given a few photos of it. Shen \etal released a high-resolution benchmark for it \cite{shen2023hrinsdet} and later treated it as an open-world problem, adapting foundation-model features to the reference views \cite{shen2025idow}. VoxDet \cite{li2023voxdet} learns a voxel representation from multi-view templates, and NIDS-Net \cite{lu2025nidsnet} pairs Grounding DINO proposals with refined DINOv2 embeddings, which is close to our pipeline. These benchmarks hold tens to a few hundred household objects in sparse scenes. None contains a dense shelf or a set of instances that differ only in a printed flavour or size.
+
+\paragraph{Retail product recognition.}
+Most retail datasets offer either SKU identity without shelf boxes, such as RP2K \cite{peng2020rp2k} and Retail-786k \cite{lamm2023retail786k}, or shelf boxes without identity, such as SKU-110K \cite{goldman2019sku110k} and Locount \cite{cai2021locount}. Grocery Products \cite{george2014grocery} pairs one studio image per product with shelf photos, and OS2D \cite{osokin2020os2d} re-labelled it with one box per instance. Methods on these data detect and then match. Tonioni \etal used local features with geometric checks \cite{tonioni2017subgraph} and then learned embeddings \cite{tonioni2018pipeline}; OS2D matches reference features against dense anchors; Unitail \cite{chen2022unitail} reads the text on the pack; and Budimir \etal \cite{budimir2025contextaware} use neighbouring products as context. Every one of these trains its own components on retail data, so none of them tells us what a zero-shot OVD can do. On the foundation-model side, Tur \etal \cite{tur2024mimex} found CLIP, BLIP and DINOv2 weak as zero-shot product classifiers, and Maminta and Atienza \cite{maminta2026groceryretrieval} compared 190 open vision--language models for grocery retrieval and saw recall fall sharply between the top five and the top one on similar SKUs. Both start from a crop, so shelf detection is outside their scope.
+
+\begin{table}[t]
+  \centering
+  \footnotesize
+  \setlength{\tabcolsep}{2.6pt}
+  \begin{tabular}{@{}lccccc@{}}
+    \toprule
+    Work & Scene & Input & FM & SKU & Fixes \\
+    \midrule
+    Bianchi \etal \cite{bianchi2024devil}            & generic   & image & yes & no  & no \\
+    IDOW \cite{shen2025idow}                         & household & image & yes & no  & no \\
+    OS2D \cite{osokin2020os2d}                       & shelf     & image & no  & yes & no \\
+    Budimir \etal \cite{budimir2025contextaware}     & shelf     & crop  & no  & yes & no \\
+    Maminta \etal \cite{maminta2026groceryretrieval} & product   & crop  & yes & yes & no \\
+    \midrule
+    Ours                                             & shelf     & image & yes & yes & 3 \\
+    \bottomrule
+  \end{tabular}
+  \caption{Closest works. Input: whole image or a pre-cropped product. FM: zero-shot foundation detector or features evaluated. SKU: labels separate same-brand variants. Fixes: text-prompt, exemplar and re-ranking remedies compared under one protocol.}
+  \label{tab:related}
+\end{table}
+
+\paragraph{Summary and gap.}
+\Cref{tab:related} lines up the five nearest works. The study that probes OVDs on fine distinctions uses generic objects; instance detection uses household objects that look nothing alike; and the work that reaches SKU level either crops the product first or trains a matcher without any foundation detector. What remains open is the size of the category-to-SKU drop when an OVD faces a real shelf, how much of that drop is same-brand confusion, and whether text prompts, image exemplars or a small trained re-ranker over frozen features is the cheapest way to win it back. This proposal sets out to answer those three questions.
+
+\begin{figure*}[t]
+  \centering
+  \includegraphics[width=\textwidth]{fig_arch.pdf}
+  \caption{Proposed pipeline. (a) A frozen open-vocabulary detector proposes one class-agnostic box per facing. (b) Crops and catalogue reference images go through a shared frozen DINOv2 encoder, and SKU names and crops through frozen CLIP text and image encoders. (c) The trained adapter $g_\theta$ and fusion re-ranker score every crop against every SKU; the loss gives extra weight to SKUs of the true SKU's brand, which are the hard negatives. (d) Each facing gets a SKU label or is rejected as unknown. Snowflake: frozen; flame: trained. Photographs as in \cref{fig:teaser}; scores in (c) and (d) are made up for illustration and are not results.}
+  \label{fig:arch}
+\end{figure*}
+
+\input{sec_method}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Experimental Plan}
+\label{sec:plan}
+
+\paragraph{Datasets.} \emph{Grocery Products} \cite{george2014grocery} with the OS2D per-instance boxes \cite{osokin2020os2d} is the main benchmark: 680 shelf images, 8\,921 boxes and 1\,063 SKUs, each SKU with one studio image. We put 70\% of SKUs in a \emph{base} set for training and keep 30\% as \emph{novel} SKUs that the adapter never sees, and split the images 60/20/20 for training, validation and test. The OS2D \emph{dairy} (12 images, 166 SKUs) and \emph{paste} (91 images, 259 SKUs) sets serve as a second test on products that are entirely new. We derive brand groups from product names and check them by hand. \emph{RP2K} \cite{peng2020rp2k}, whose 2\,388 SKUs carry brand, flavour and size labels, adds same-brand training pairs, and \emph{SKU-110K} \cite{goldman2019sku110k} (11\,762 images) is used only for class-agnostic proposal recall. Licences: the OS2D annotations are MIT; Grocery Products and RP2K state none, so we use them for non-commercial research only; SKU-110K is restricted to academic, non-commercial use.
+
+\paragraph{Baselines.} (B1) Zero-shot OVDs with category prompts and with full SKU-name prompts: Grounding DINO Swin-T, YOLO-World-L and OWLv2 B/16, with SKU names split into chunks that fit each model's token limit. (B2) Exemplar prompting with each SKU's reference image: OWLv2 image queries, MQ-Det and DE-ViT. (B3) Our proposals with frozen DINOv2 or CLIP nearest-neighbour matching, which is the Tonioni pipeline \cite{tonioni2018pipeline} with current features. (B4) OS2D \cite{osokin2020os2d} as a trained one-shot reference. Our method is B3 plus the adapter and re-ranker. Ablations cover $\gamma\in\{1,2,4\}$, removal of each term of \cref{eq:score}, and DINOv2 versus CLIP image features.
+
+\paragraph{Metrics.} \emph{SKU-level mAP$_{50}$} is COCO-style average precision at an IoU threshold of 0.5, computed for each SKU and averaged over the SKUs present in the test split; boxes flagged as difficult are ignored. \emph{Category-level mAP$_{50}$} is the same after mapping each label to its Grocery Products category, and $\Delta=\text{mAP}^{\text{cat}}_{50}-\text{mAP}^{\text{SKU}}_{50}$ answers contribution 1. \emph{Top-1/top-5 accuracy} scores SKU recognition on ground-truth boxes, so that recognition is judged apart from localisation. \emph{Same-brand confusion} is the fraction of top-1 errors on ground-truth boxes whose predicted SKU belongs to the true SKU's brand. \emph{Novel-SKU top-1} restricts top-1 to novel SKUs. \emph{Proposal recall} is AR$_{100}$ at IoU 0.5. \emph{Open-set AUROC} measures how well $\max_k s_{ik}$ separates catalogue from non-catalogue facings. \emph{Latency} is milliseconds per image on one T4 GPU. Every number is averaged over three random SKU splits and reported with its standard deviation.
+
+\paragraph{Compute.} Each detector runs once per test image, about a second per image and under an hour in total. We cache crop features: some 9\,k shelf crops, each with four augmented views, plus 0.35\,M RP2K crops through DINOv2 ViT-B/14 take around 2 hours on a T4. Training the adapter on cached features takes under 10 minutes, so all 3 splits $\times$ 3 values of $\gamma$ $\times$ 5 ablations stay below 10 GPU hours. We budget about 20 GPU hours overall, on Colab or the campus server.
+
+\begin{table}[t]
+  \centering
+  \footnotesize
+  \begin{tabular}{@{}lp{0.80\linewidth}@{}}
+    \toprule
+    Week & Tasks \\
+    \midrule
+    1 (9 Oct)  & Download data; freeze SKU and image splits; build brand groups \\
+    2 (16 Oct) & B1 zero-shot runs; category and SKU mAP$_{50}$; proposal recall \\
+    3 (23 Oct) & B2 exemplar baselines; B3 frozen nearest neighbour; OS2D \\
+    4 (30 Oct) & Feature cache; first adapter and re-ranker, $\gamma=1$ \\
+    5 (6 Nov)  & $\gamma$ sweep and ablations; novel-SKU, dairy and paste tests \\
+    6 (13 Nov) & Repeat on three splits; open-set threshold; latency; error analysis \\
+    7 (20 Nov) & Paper draft in the CVPR kit; phone-camera demo \\
+    8 (27 Nov) & Slack week; final paper; Term-II demonstration \\
+    \bottomrule
+  \end{tabular}
+  \caption{Weekly schedule from 9 October to the Term-II demo.}
+  \label{tab:plan}
+\end{table}
+
+\paragraph{Schedule.} \Cref{tab:plan} gives the weekly plan.
+
+\paragraph{Risks.} With only 680 test images, differences between methods may be small next to the noise, which is why we report the spread over three splits. The reference images are studio shots, so absolute numbers reflect this dataset's studio-to-shelf shift. If proposal recall turns out low, missed boxes would blur the SKU results, so we also score recognition on ground-truth boxes.
+
+{\small
+\bibliographystyle{ieeenat_fullname}
+\bibliography{refs}
+}
+
+\end{document}
