@@ -1,6 +1,6 @@
 # SKU-Sense
 
-**Same Brand, Different SKU: Can Open-Vocabulary Detectors Recognise Near-Identical Products on Retail Shelves?**
+**Same Brand, Different SKU: Open-Vocabulary Detection of Near-Identical Products on Retail Shelves**
 
 BITS F459 Computer Vision mini project (BITS Pilani, Dubai Campus, 2026-27).
 Kirtika, Wundavalli Venkata Aneesh, Vaishnavi, Devadutt Balakrishnan, Rohit Vinod Nair.
